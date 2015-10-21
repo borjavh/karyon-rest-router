@@ -6,6 +6,11 @@ import io.netty.buffer.ByteBuf;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
 import io.reactivex.netty.protocol.http.server.RequestHandler;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import javax.inject.Inject;
 import org.apache.commons.lang.StringUtils;
 import org.commonjava.mimeparse.MIMEParse;
 import rx.Observable;
@@ -21,12 +26,6 @@ import scmspain.karyon.restrouter.transport.http.RestUriRouter;
 import scmspain.karyon.restrouter.transport.http.Route;
 import scmspain.karyon.restrouter.transport.http.RouteNotFound;
 
-import javax.inject.Inject;
-import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-
 public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
   private SerializeManager serializerManager;
   private RestUriRouter<ByteBuf, ByteBuf> restUriRouter;
@@ -35,6 +34,7 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
 
   /**
    * Creates an instance
+   *
    * @param restUriRouter the rest uri router
    * @param serializerManager the serializer manager
    * @param errorHandler the error handler
@@ -50,22 +50,16 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
   }
 
   /**
-   * <p>
-   *   It handles every request and delegates to the appropriate {@link scmspain.karyon.restrouter.annotation.Endpoint}
+   * <p> It handles every request and delegates to the appropriate {@link
+   * scmspain.karyon.restrouter.annotation.Endpoint} </p> <p> It also uses negotiates the response
+   * content using accept header and applies the corresponding serializer according to the {@link
+   * scmspain.karyon.restrouter.annotation.Path} annotated method using the return type of the
+   * method. </p> <p> If the method returns Observable&lt;Void%gt; it will not use the accept
+   * negociation, so it will be the responsibility of the endpoint method to handle it
+   * appropriately. </p> <p> If the method returns some other type of elements in the observable, it
+   * will use the content negotiation and at the end it will try to serialize the DTO returned.
    * </p>
-   * <p>
-   *   It also uses negotiates the response content using accept header and applies the corresponding
-   *   serializer according to the {@link scmspain.karyon.restrouter.annotation.Path} annotated
-   *   method using the return type of the method.
-   * </p>
-   * <p>
-   *   If the method returns Observable&lt;Void%gt; it will not use the accept negociation, so it will
-   *   be the responsibility of the endpoint method to handle it appropriately.
-   * </p>
-   * <p>
-   *   If the method returns some other type of elements in the observable, it will use the content
-   *   negotiation and at the end it will try to serialize the DTO returned.
-   * </p>
+   *
    * @param request the request
    * @param response the response
    * @return an Observable with just onComplete when all the resquest is handled and sent to the
@@ -75,25 +69,20 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
   public Observable<Void> handle(HttpServerRequest<ByteBuf> request,
                                  HttpServerResponse<ByteBuf> response) {
 
-    Route<ByteBuf, ByteBuf> route =  restUriRouter.findBestMatch(request, response)
+    Route<ByteBuf, ByteBuf> route = restUriRouter.findBestMatch(request, response)
         .orElse(new RouteNotFound<>());
-    Observable<Void> result;
 
     if (route.isCustomSerialization()) {
-      result = handleCustomSerialization(route, request, response);
-
-    } else {
-      result = handleSupported(route, request, response);
-
+      return handleCustomSerialization(route, request, response);
     }
 
-    return result;
+    return handleSupported(route, request, response);
   }
 
 
-  private Observable<Void> handleSupported(Route<ByteBuf,ByteBuf> route,
-                                          HttpServerRequest<ByteBuf> request,
-                                          HttpServerResponse<ByteBuf> response) {
+  private Observable<Void> handleSupported(Route<ByteBuf, ByteBuf> route,
+                                           HttpServerRequest<ByteBuf> request,
+                                           HttpServerResponse<ByteBuf> response) {
     Observable<Object> resultObs;
     Optional<String> negotiatedContentType;
     Set<String> supportedContentTypes = getSupportedContentTypes(route);
@@ -110,20 +99,17 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
     String contentType = negotiatedContentType
         .orElseGet(serializerManager::getDefaultContentType);
 
-    resultObs = resultObs.onErrorResumeNext(throwable -> {
-          if (errorHandler != null) {
-            return errorHandler.handleError(request, throwable, response::setStatus);
-
-          } else {
-            return Observable.error(throwable);
-          }
-        }
-    );
-
-    // If RouteNotFound is not handle it will be handled here
-    resultObs = resultObs.onErrorResumeNext(throwable -> {
-      return defaultKaryonErrorHandler.handleError(request, throwable, response::setStatus);
-    });
+    resultObs = resultObs
+        .onErrorResumeNext(throwable -> {
+              if (errorHandler != null) {
+                return errorHandler.handleError(request, throwable, response::setStatus);
+              }
+              return Observable.error(throwable);
+            }
+        )// If RouteNotFound is not handle it will be handled here
+        .onErrorResumeNext(throwable -> {
+          return defaultKaryonErrorHandler.handleError(request, throwable, response::setStatus);
+        });
 
     Serializer serializer = serializerManager.getSerializer(contentType)
         .orElseThrow(() -> new CannotSerializeException("Cannot serialize " + contentType));
@@ -135,19 +121,20 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
 
 
   private Observable<Void> handleCustomSerialization(Route<ByteBuf, ByteBuf> route,
-                                                    HttpServerRequest<ByteBuf> request,
-                                                    HttpServerResponse<ByteBuf> response) {
+                                                     HttpServerRequest<ByteBuf> request,
+                                                     HttpServerResponse<ByteBuf> response) {
 
-    Observable<Object> resultObs = route.getHandler()
-        .process(request, response);
+    return route.getHandler()
+        .process(request, response)
+        .onErrorResumeNext(throwable -> {
+              return defaultKaryonErrorHandler.handleError(request, throwable, response::setStatus)
+                  .map(this::serializeErrorDto)
+                  .flatMap(response::writeStringAndFlush);
 
-    resultObs = resultObs.onErrorResumeNext(throwable -> {
-      return defaultKaryonErrorHandler.handleError(request, throwable, response::setStatus)
-          .map(this::serializeErrorDto)
-          .flatMap(response::writeStringAndFlush);
-    });
+            }
+        )
+        .flatMap(resultProcess -> Observable.empty());
 
-    return resultObs.cast(Void.class);
   }
 
   private String serializeErrorDto(RestRouterErrorDTO errorDTO) {
@@ -186,9 +173,8 @@ public class RestRouterHandler implements RequestHandler<ByteBuf, ByteBuf> {
         default:
           throw new CannotSerializeException("Cannot determine the content-type to serialize between: " + supportedContentTypes);
       }
-    } else {
-      return getSerializerContentType(accept, supportedContentTypes);
     }
+    return getSerializerContentType(accept, supportedContentTypes);
 
   }
 

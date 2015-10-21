@@ -9,6 +9,16 @@ import com.netflix.config.ConfigurationManager;
 import io.netty.buffer.ByteBuf;
 import io.reactivex.netty.protocol.http.server.HttpServerRequest;
 import io.reactivex.netty.protocol.http.server.HttpServerResponse;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import rx.Observable;
@@ -21,17 +31,6 @@ import scmspain.karyon.restrouter.core.URIParameterParser;
 import scmspain.karyon.restrouter.serializer.SerializeManager;
 import scmspain.karyon.restrouter.transport.http.RestUriRouter;
 import scmspain.karyon.restrouter.transport.http.Route;
-
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Stream;
 
 import static org.reflections.ReflectionUtils.getAllMethods;
 import static org.reflections.ReflectionUtils.withAnnotation;
@@ -65,38 +64,6 @@ public class RestRouterScanner {
       this.uri = uri;
       this.verb = verb;
     }
-  }
-
-  @Inject
-  private void validate(SerializeManager serializeManager) {
-    List<Route<ByteBuf, ByteBuf>> routes = restUriRouter.getRoutes();
-
-    for(Route<ByteBuf, ByteBuf> route: routes) {
-      Set<String> produces = route.getProduces();
-      boolean custom = route.isCustomSerialization();
-
-      if(serializeManager.getSupportedMediaTypes().isEmpty() && !custom) {
-        String message = "There isn't serializers configured with a serialized route '" + route.getName() + "'";
-
-        RuntimeException e = new RuntimeException(message);
-        logger.error("error", e);
-        throw e;
-      }
-
-      if(!serializeManager.getSupportedMediaTypes().containsAll(produces)) {
-        RuntimeException e = new RuntimeException("Existe una route con produces y no hay serializacion para alguno de los media types");
-        logger.error("error", e);
-        throw e;
-      }
-
-      if(!produces.isEmpty() && custom) {
-        RuntimeException e = new RuntimeException("Route con produces y custom");
-        logger.error("error", e);
-        throw e;
-      }
-
-    }
-
   }
 
   @Inject
