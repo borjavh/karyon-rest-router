@@ -1,8 +1,5 @@
 package scmspain.karyon.restrouter.endpoint.dto;
 
-/**
- * Created by pablo.diaz on 29/9/15.
- */
 public class ExampleDTO {
   private String value;
 
